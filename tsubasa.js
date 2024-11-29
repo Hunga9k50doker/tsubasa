@@ -3,14 +3,79 @@ const path = require("path");
 const axios = require("axios");
 const colors = require("colors");
 const readline = require("readline");
-require("dotenv").config();
+const user_agents = require("./config/userAgents");
+const settings = require("./config/config");
+const { sleep } = require("./utils");
 
 class Tsubasa {
   constructor() {
     this.data = this.loadData();
     this.headers = this.initHeaders();
     this.config = this.loadConfig();
-    this.restDuration = parseInt(process.env.timeSleep) || 5;
+    this.restDuration = settings.TIME_SLEEP;
+    this.session_user_agents = this.#load_session_data();
+    this.session_name = null;
+    this.skipTasks = settings.SKIP_TASKS;
+    this.today = new Date().toISOString().slice(0, 10).replace(/-/g, "");
+  }
+
+  #load_session_data() {
+    try {
+      const filePath = path.join(process.cwd(), "session_user_agents.json");
+      const data = fs.readFileSync(filePath, "utf8");
+      return JSON.parse(data);
+    } catch (error) {
+      if (error.code === "ENOENT") {
+        return {};
+      } else {
+        throw error;
+      }
+    }
+  }
+
+  #get_random_user_agent() {
+    const randomIndex = Math.floor(Math.random() * user_agents.length);
+    return user_agents[randomIndex];
+  }
+
+  #get_user_agent() {
+    if (this.session_user_agents[this.session_name]) {
+      return this.session_user_agents[this.session_name];
+    }
+
+    this.log(`Tạo user agent...`);
+    const newUserAgent = this.#get_random_user_agent();
+    this.session_user_agents[this.session_name] = newUserAgent;
+    this.#save_session_data(this.session_user_agents);
+    return newUserAgent;
+  }
+
+  #save_session_data(session_user_agents) {
+    const filePath = path.join(process.cwd(), "session_user_agents.json");
+    fs.writeFileSync(filePath, JSON.stringify(session_user_agents, null, 2));
+  }
+
+  #get_platform(userAgent) {
+    const platformPatterns = [
+      { pattern: /iPhone/i, platform: "ios" },
+      { pattern: /Android/i, platform: "android" },
+      { pattern: /iPad/i, platform: "ios" },
+    ];
+
+    for (const { pattern, platform } of platformPatterns) {
+      if (pattern.test(userAgent)) {
+        return platform;
+      }
+    }
+
+    return "Unknown";
+  }
+
+  set_headers() {
+    const platform = this.#get_platform(this.#get_user_agent());
+    this.headers["sec-ch-ua"] = `"Not)A;Brand";v="99", "${platform} WebView";v="127", "Chromium";v="127`;
+    this.headers["sec-ch-ua-platform"] = platform;
+    this.headers["User-Agent"] = this.#get_user_agent();
   }
 
   loadData() {
@@ -61,29 +126,16 @@ class Tsubasa {
 
   loadConfig() {
     const config = {
-      enableCardUpgrades: true,
-      enableTapUpgrades: true,
-      enableEnergyUpgrades: true,
-      maxUpgradeCost: 1000000,
-      maxTapUpgradeLevel: 5,
-      maxEnergyUpgradeLevel: 5,
-      dailycombo: false,
-      cardsdailycombo: [],
+      enableTapUpgrades: settings.AUTO_UPGRADE_TAP,
+      enableCardUpgrades: settings.AUTO_UPGRADE_CARD,
+      enableEnergyUpgrades: settings.AUTO_UPGRADE_ENERGY,
+      maxTapUpgradeLevel: settings.MAX_LEVEL_TAP,
+      maxUpgradeCost: settings.MAX_PRICE_UPGRADE_CARD,
+      maxEnergyUpgradeLevel: settings.MAX_LEVEL_ENERGY,
+      dailycombo: settings.AUTO_DAILY_COMBO,
+      cardsdailycombo: settings.DAILY_COMBO,
     };
-    try {
-      config.enableTapUpgrades = process.env.enableTapUpgrades?.toLowerCase() === "true";
-      config.enableCardUpgrades = process.env.enableCardUpgrades?.toLowerCase() === "true";
-      config.enableEnergyUpgrades = process.env.enableEnergyUpgrades?.toLowerCase() === "true";
-      config.maxTapUpgradeLevel = parseInt(process.env.maxTapUpgradeLevel) || 5;
-      config.maxUpgradeCost = parseInt(process.env.maxUpgradeCost) || 1000000;
-      config.maxEnergyUpgradeLevel = parseInt(process.env.maxEnergyUpgradeLevel) || 5;
-      config.dailycombo = process.env.dailycombo?.toLowerCase() === "true";
-      config.cardsdailycombo = process.env.cardsdailycombo || [];
-      return config;
-    } catch (error) {
-      console.error("Không đọc được .env:", error.message);
-      return config;
-    }
+    return config;
   }
 
   async countdown(seconds) {
@@ -96,7 +148,7 @@ class Tsubasa {
   }
 
   async callStartAPI(initData, axiosInstance) {
-    const startUrl = "https://app.ton.tsubasa-rivals.com/api/start";
+    const startUrl = "https://api.app.ton.tsubasa-rivals.com/api/start";
     const startPayload = { lang_code: "en", initData: initData };
 
     try {
@@ -108,9 +160,11 @@ class Tsubasa {
           this.headers["X-Masterhash"] = masterHash;
         }
 
-        const tasks = startResponse.data.task_info ? startResponse.data.task_info.filter((task) => task.status === 0 || task.status === 1) : [];
+        const tasks = startResponse.data.task_info ? startResponse.data.task_info.filter((task) => (task.status === 0 || task.status === 1) && !settings.SKIP_TASKS.includes(task.id)) : [];
 
         return {
+          ...startResponse.data.game_data.user,
+          user_daily_reward: startResponse.data.user_daily_reward,
           total_coins,
           energy,
           max_energy,
@@ -127,9 +181,16 @@ class Tsubasa {
     }
   }
 
-  async callDailyRewardAPI(initData, axiosInstance) {
-    const dailyRewardUrl = "https://app.ton.tsubasa-rivals.com/api/daily_reward/claim";
+  async callDailyRewardAPI(initData, axiosInstance, userInfo) {
+    const dailyRewardUrl = "https://api.app.ton.tsubasa-rivals.com/api/daily_reward/claim";
     const dailyRewardPayload = { initData: initData };
+    const { user_daily_reward } = userInfo;
+    const today = new Date().setHours(0, 0, 0, 0);
+    const dateConfig = new Date(user_daily_reward.last_update * 1000).setHours(0, 0, 0, 0);
+    if (today === dateConfig) {
+      this.log(`Bạn đã checkin hôm nay, streak: ${user_daily_reward.consecutive_count}`, "warning");
+      return;
+    }
 
     try {
       const dailyRewardResponse = await axiosInstance.post(dailyRewardUrl, dailyRewardPayload);
@@ -146,47 +207,54 @@ class Tsubasa {
     }
   }
 
-  async executeTask(initData, taskId, axiosInstance) {
-    const executeUrl = "https://app.ton.tsubasa-rivals.com/api/task/execute";
-    const executePayload = { task_id: taskId, initData: initData };
+  async executeTask(initData, task, axiosInstance) {
+    const { id, title } = task;
+    //  if(se)
+    const executeUrl = "https://api.app.ton.tsubasa-rivals.com/api/task/execute";
+    const executePayload = { task_id: id, initData: initData };
 
     try {
       const executeResponse = await axiosInstance.post(executeUrl, executePayload);
       return executeResponse.status === 200;
     } catch (error) {
-      this.log(`Lỗi khi làm nhiệm vụ ${taskId}: ${error.message}`);
+      this.log(`Lỗi khi làm nhiệm vụ ${id}| ${title}: ${error.message}`, "warning");
       return false;
     }
   }
 
-  async checkTaskAchievement(initData, taskId, axiosInstance) {
-    const achievementUrl = "https://app.ton.tsubasa-rivals.com/api/task/achievement";
+  async checkTaskAchievement(initData, task, axiosInstance) {
+    const { id: taskId, title } = task;
+    const achievementUrl = "https://api.app.ton.tsubasa-rivals.com/api/task/achievement";
     const achievementPayload = { task_id: taskId, initData: initData };
-
+    this.log(`Bắt đầu kiểm tra kết quả nhiệm vụ ${taskId}| ${title}...`);
     try {
       const achievementResponse = await axiosInstance.post(achievementUrl, achievementPayload);
       if (achievementResponse.status === 200) {
-        if (achievementResponse.data && achievementResponse.data && achievementResponse.data.task_info) {
-          const updatedTask = achievementResponse.data.task_info.find((task) => task.id === taskId);
+        if (achievementResponse.data && achievementResponse.data.task_info) {
+          const updatedTask = achievementResponse.data.task_info.find((task) => task.id === taskId) || achievementResponse.data.update?.task;
           if (updatedTask && updatedTask.status === 2) {
-            return { success: true, title: updatedTask.title, reward: updatedTask.reward };
+            return { success: true, description: "success", reward: updatedTask.reward };
+          } else if (updatedTask) {
+            return { success: false, description: updatedTask.description || "Chưa đạt điều kiện hoặc nhiệm vụ cần thực hiện thủ công!" };
           }
         }
       }
-      return { success: false };
+      return { success: false, description: "Chưa đạt điều kiện hoặc nhiệm vụ cần thực hiện thủ công!" };
     } catch (error) {
-      this.log(`Lỗi rồi ${taskId}: ${error.message}`);
-      return { success: false };
+      this.log(`Lỗi rồi ${taskId}| ${title}: ${error.response.data.message || error.message}`, "warning");
+      return { success: false, description: error.message };
     }
   }
 
-  async getCardInfo(initData, axiosInstance) {
-    const startUrl = "https://app.ton.tsubasa-rivals.com/api/start";
+  async getUserInfo(initData, axiosInstance) {
+    const startUrl = "https://api.app.ton.tsubasa-rivals.com/api/start";
     const startPayload = { lang_code: "en", initData: initData };
 
     try {
       const startResponse = await axiosInstance.post(startUrl, startPayload);
       if (startResponse.status === 200 && startResponse.data && startResponse.data.card_info) {
+        const dailyCombo = startResponse.data.daily_combo;
+        // console.log(dailycombo);
         const cardInfo = startResponse.data.card_info.flatMap((category) => {
           return category.card_list.map((card) => ({
             categoryId: card.category,
@@ -199,13 +267,14 @@ class Tsubasa {
             nextProfitPerHour: card.next_profit_per_hour,
           }));
         });
-        return cardInfo;
+
+        return { cardInfo, dailyCombo };
       } else {
-        console.log("Không tìm thấy thông tin thẻ!");
+        console.log("Không tìm thấy thông tin user!");
         return null;
       }
     } catch (error) {
-      console.log(`Lỗi lấy thông tin thẻ: ${error.message}`);
+      console.log(`Lỗi lấy thông tin user: ${error.message}`);
       return null;
     }
   }
@@ -215,12 +284,24 @@ class Tsubasa {
     let cardLevelToUnlock = parentCard?.unlockCardLevel || 1;
     let cardCurrentLevel = card.level;
     let updatedTotalCoins = totalCoins;
+    const { level_up_available_date } = card;
+    if (level_up_available_date && level_up_available_date > 0) {
+      const now = Math.floor(Date.now() / 1000);
+      const secondsLeft = level_up_available_date - now;
+      if (secondsLeft > 0) {
+        const hours = Math.floor(secondsLeft / 3600);
+        const minutes = Math.floor((secondsLeft % 3600) / 60);
+        const seconds = secondsLeft % 60;
+        this.log(`Chưa đến thời gian nâng cấp tiếp theo cho thẻ ${card.name} (${card.cardId}): Còn ${hours} hours ${minutes} minutes ${seconds} seconds to continue upgrade...`, "warning");
+        return updatedTotalCoins;
+      }
+    }
 
     if (card.unlocked) {
       if (updatedTotalCoins < card.cost)
         return this.log(`Không đủ số dư để nâng cấp thẻ ${card.name} (${card.cardId}) lên level ${cardCurrentLevel + 1}. Cost: ${card.cost}, Balance còn: ${updatedTotalCoins}`, "warning");
       do {
-        const levelUpUrl = "https://app.ton.tsubasa-rivals.com/api/card/levelup";
+        const levelUpUrl = "https://api.app.ton.tsubasa-rivals.com/api/card/levelup";
         const levelUpPayload = {
           category_id: card.categoryId,
           card_id: card.cardId,
@@ -230,7 +311,7 @@ class Tsubasa {
           const levelUpResponse = await axiosInstance.post(levelUpUrl, levelUpPayload);
           if (levelUpResponse.status === 200) {
             updatedTotalCoins -= card.cost;
-            this.log(`Nâng cấp thẻ ${card.name} (${card.cardId}) lên level ${cardCurrentLevel + 1}. Cost: ${card.cost}, Balance còn: ${updatedTotalCoins}`);
+            this.log(`Nâng cấp thẻ ${card.name} (${card.cardId}) lên level ${cardCurrentLevel + 1}. Cost: ${card.cost}, Balance còn: ${updatedTotalCoins}`, "success");
           }
         } catch (error) {
           if (error.response && error.response.status === 400 && error.response.data && error.response.data.message === "Wait for cooldown") {
@@ -257,34 +338,28 @@ class Tsubasa {
     if (!this.config.dailycombo) {
       return totalCoins;
     }
-    const cardsComboDaily = this.config.cardsdailycombo
-      .replace(/[\[\]'"]/g, "") // Remove brackets, quotes
-      .split(",")
-      .map((item) => item.trim());
+    const cardsComboDaily = this.config.cardsdailycombo;
 
-    let cardInfo = await this.getCardInfo(initData, axiosInstance);
+    let { cardInfo, dailyCombo } = await this.getUserInfo(initData, axiosInstance);
+    if (!dailyCombo || !cardInfo) {
+      this.log(`Không thể lấy thông tin daily combo của user. Bỏ qua...`, "warning");
+      return;
+    }
+
+    if (dailyCombo && dailyCombo.card_ids.length === 3 && dailyCombo.card_ids.every((id) => id !== null) && dailyCombo.date === this.today) {
+      this.log(`Daily combo hôm nay đã hoàn thành. Bỏ qua...`, "warning");
+      return;
+    }
+
     let updatedTotalCoins = totalCoins;
-    let comboComplete = [];
+    const comboComplete = dailyCombo.card_ids.filter((item) => item !== null);
+
     for (let i = 0; i < cardsComboDaily.length; i++) {
       await new Promise((resolve) => setTimeout(resolve, 1000));
-      if (!cardInfo) {
-        console.log("Không lấy được thông tin thẻ. Hủy nâng cấp thẻ!");
-        return;
-      }
-      const carDaily = cardInfo.find((item) => item.name?.toLowerCase() === cardsComboDaily[i]?.toLowerCase());
+      const carDaily = cardInfo.find((item) => item.name?.toLowerCase() === cardsComboDaily[i]?.toLowerCase() && !comboComplete.includes(item.id));
       if (carDaily) {
         updatedTotalCoins = await this.handleUnlock(carDaily, null, cardInfo, initData, totalCoins, axiosInstance);
-        cardInfo = await this.getCardInfo(initData, axiosInstance);
-        const currentCarDaily = cardInfo.find((item) => item.name?.toLowerCase() === cardsComboDaily[i]?.toLowerCase());
-        if (currentCarDaily.level > carDaily.level) {
-          this.config.cardsdailycombo = cardsComboDaily.filter((item) => item?.toLowerCase() !== currentCarDaily.name.toLowerCase());
-          comboComplete.push(currentCarDaily);
-        }
       }
-    }
-    if (comboComplete.length === 3) {
-      this.log(`Đã nâng hoàn thành dailycombo | Balance: ${updatedTotalCoins}`, "success");
-      this.config.dailycombo = false;
     }
     return updatedTotalCoins;
   }
@@ -300,7 +375,7 @@ class Tsubasa {
 
     do {
       leveledUp = false;
-      const cardInfo = await this.getCardInfo(initData, axiosInstance);
+      const { cardInfo } = await this.getUserInfo(initData, axiosInstance);
       if (!cardInfo) {
         console.log("Không lấy được thông tin thẻ. Hủy nâng cấp thẻ!");
         break;
@@ -314,13 +389,25 @@ class Tsubasa {
           continue;
         }
 
+        if (card.level_up_available_date && card.level_up_available_date > 0) {
+          const now = Math.floor(Date.now() / 1000);
+          const secondsLeft = card.level_up_available_date - now;
+          if (secondsLeft > 0) {
+            const hours = Math.floor(secondsLeft / 3600);
+            const minutes = Math.floor((secondsLeft % 3600) / 60);
+            const seconds = secondsLeft % 60;
+            this.log(`Chưa đến thời gian nâng cấp tiếp theo cho thẻ ${card.name} (${card.cardId}): Còn ${hours} hours ${minutes} minutes ${seconds} seconds to continue upgrade...`, "warning");
+            continue;
+          }
+        }
+
         if (card.end_datetime && currentTime > card.end_datetime) {
           this.log(`Thẻ ${card.name} (${card.cardId}) đã hết hạn. Bỏ qua nâng cấp.`, "warning");
           continue;
         }
 
         if (card.unlocked && updatedTotalCoins >= card.cost && card.cost <= this.config.maxUpgradeCost) {
-          const levelUpUrl = "https://app.ton.tsubasa-rivals.com/api/card/levelup";
+          const levelUpUrl = "https://api.app.ton.tsubasa-rivals.com/api/card/levelup";
           const levelUpPayload = {
             category_id: card.categoryId,
             card_id: card.cardId,
@@ -332,15 +419,14 @@ class Tsubasa {
             if (levelUpResponse.status === 200) {
               updatedTotalCoins -= card.cost;
               leveledUp = true;
-              this.log(`Nâng cấp thẻ ${card.name} (${card.cardId}) lên level ${card.level + 1}. Cost: ${card.cost}, Balance còn: ${updatedTotalCoins}`);
+              this.log(`Nâng cấp thẻ ${card.name} (${card.cardId}) lên level ${card.level + 1}. Cost: ${card.cost}, Balance còn: ${updatedTotalCoins}`, "success");
               break;
             }
           } catch (error) {
-            if (error.response && error.response.status === 400 && error.response.data && error.response.data.message === "Wait for cooldown") {
-              this.log(`Chưa đến thời gian nâng cấp tiếp theo cho thẻ ${card.name} (${card.cardId})`, "warning");
+            if (error.response && error.response.status === 400 && error.response.data) {
+              this.log(`Lỗi nâng cấp thẻ ${card.name} (${card.cardId}): ${error.response.data.message}`, "warning");
               cooldownCards.add(card.cardId);
             } else {
-              console.log(error);
               this.log(`Lỗi nâng cấp thẻ ${card.name} (${card.cardId}): ${error.message}`, "error");
             }
           }
@@ -352,7 +438,7 @@ class Tsubasa {
   }
 
   async callTapAPI(initData, tapcount, axiosInstance) {
-    const tapUrl = "https://app.ton.tsubasa-rivals.com/api/tap";
+    const tapUrl = "https://api.app.ton.tsubasa-rivals.com/api/tap";
     const tapPayload = { tapCount: tapcount, initData: initData };
 
     try {
@@ -369,7 +455,7 @@ class Tsubasa {
   }
 
   async callEnergyRecoveryAPI(initData, axiosInstance) {
-    const recoveryUrl = "https://app.ton.tsubasa-rivals.com/api/energy/recovery";
+    const recoveryUrl = "https://api.app.ton.tsubasa-rivals.com/api/energy/recovery";
     const recoveryPayload = { initData: initData };
 
     try {
@@ -434,7 +520,7 @@ class Tsubasa {
   }
 
   async callTapLevelUpAPI(initData, axiosInstance) {
-    const tapLevelUpUrl = "https://app.ton.tsubasa-rivals.com/api/tap/levelup";
+    const tapLevelUpUrl = "https://api.app.ton.tsubasa-rivals.com/api/tap/levelup";
     const payload = { initData: initData };
 
     try {
@@ -451,7 +537,7 @@ class Tsubasa {
   }
 
   async callEnergyLevelUpAPI(initData, axiosInstance) {
-    const energyLevelUpUrl = "https://app.ton.tsubasa-rivals.com/api/energy/levelup";
+    const energyLevelUpUrl = "https://api.app.ton.tsubasa-rivals.com/api/energy/levelup";
     const payload = { initData: initData };
 
     try {
@@ -467,20 +553,7 @@ class Tsubasa {
     }
   }
 
-  async upgradeGameStats(initData, axiosInstance) {
-    const tapResult = await this.callTapAPI(initData, 1, axiosInstance);
-    if (!tapResult.success) {
-      this.log(tapResult.error, "error");
-      return;
-    }
-
-    const requiredProps = ["total_coins", "energy", "max_energy", "multi_tap_count", "profit_per_second", "tap_level", "energy_level"];
-    const missingProps = requiredProps.filter((prop) => tapResult[prop] === undefined);
-    if (missingProps.length > 0) {
-      this.log(`Missing required properties: ${missingProps.join(", ")}`, "error");
-      return;
-    }
-
+  async upgradeGameStats(initData, axiosInstance, tapResult) {
     let { total_coins, energy, max_energy, multi_tap_count, profit_per_second, tap_level, energy_level } = tapResult;
 
     let tap_level_up_cost = this.calculateTapLevelUpCost(tap_level);
@@ -532,65 +605,83 @@ class Tsubasa {
     while (true) {
       for (let i = 0; i < this.data.length; i++) {
         const initData = this.data[i];
-        const userId = JSON.parse(decodeURIComponent(initData.split("user=")[1].split("&")[0])).id;
-        const firstName = JSON.parse(decodeURIComponent(initData.split("user=")[1].split("&")[0])).first_name;
+        const userData = JSON.parse(decodeURIComponent(initData.split("user=")[1].split("&")[0]));
+        const userId = userData.id;
+        const firstName = userData.first_name || "";
+        const lastName = userData.last_name || "";
+        this.session_name = userData.id;
 
-        this.log(`========== Tài khoản ${i + 1} | ${firstName} ==========`, "custom");
+        console.log(`=========Tài khoản ${i + 1}| ${firstName + " " + lastName}`.green);
+        this.set_headers();
 
         this.headers["X-Player-Id"] = userId.toString();
 
         const axiosInstance = axios.create({
           headers: this.headers,
+          timeout: 15000,
         });
 
         try {
           const startResult = await this.callStartAPI(initData, axiosInstance);
-          if (startResult.success) {
-            if (startResult.total_coins !== undefined) {
-              this.log(`Balance: ${startResult.total_coins}`);
-              this.log(`Năng lượng: ${startResult.energy}/${startResult.max_energy}`);
-              this.log(`Tap count: ${startResult.multi_tap_count}`);
-              this.log(`Lợi nhuận mỗi giây: ${startResult.profit_per_second}`);
-            }
+          if (!startResult.success) {
+            this.log(`Lỗi bắt đầu tài khoản ${i + 1}| ${startResult.error}: bỏ qua...`, "warning");
+            continue;
+          }
 
+          if (startResult.total_coins !== undefined) {
+            this.log(`Balance: ${startResult.total_coins}`);
+            this.log(`Năng lượng: ${startResult.energy}/${startResult.max_energy}`);
+            this.log(`Tap count: ${startResult.multi_tap_count}`);
+            this.log(`Lợi nhuận mỗi giây: ${startResult.profit_per_second}`);
+          }
+
+          //checkin
+          await this.callDailyRewardAPI(initData, axiosInstance, startResult);
+
+          if (settings.AUTO_TAP) {
+            const totalTaps = await this.tapAndRecover(initData, axiosInstance);
+            this.log(`Tổng số lần tap: ${totalTaps}`, "success");
+          }
+
+          if (this.config.dailycombo) {
+            this.log(`Bắt đầu daily combo...`);
+            await this.dailyCombo(initData, startResult.total_coins, axiosInstance);
+          }
+
+          if (settings.AUTO_TASK) {
+            this.log(`Bắt đầu nhiệm vụ...`);
             if (startResult.tasks && startResult.tasks.length > 0) {
-              for (const task of startResult.tasks) {
-                const executeResult = await this.executeTask(initData, task.id, axiosInstance);
+              const tasks = startResult.tasks;
+              for (const task of tasks) {
+                this.log(`Bắt đầu nhiệm vụ ${task.id}| ${task.title}...`);
+                await sleep(3);
+                const executeResult = await this.executeTask(initData, task, axiosInstance);
                 if (executeResult) {
-                  const achievementResult = await this.checkTaskAchievement(initData, task.id, axiosInstance);
+                  await sleep(3);
+                  const achievementResult = await this.checkTaskAchievement(initData, task, axiosInstance);
                   if (achievementResult.success) {
-                    this.log(`Làm nhiệm vụ ${achievementResult.title} thành công | phần thưởng ${achievementResult.reward}`, "success");
+                    this.log(`Làm nhiệm vụ ${task.id}| ${task.title} thành công!`, "success");
                   }
                 }
               }
             } else {
               this.log(`Không có nhiệm vụ nào khả dụng.`, "warning");
             }
+          }
 
-            const totalTaps = await this.tapAndRecover(initData, axiosInstance);
-            this.log(`Tổng số lần tap: ${totalTaps}`, "success");
+          if (this.config.enableCardUpgrades) {
+            const updatedTotalCoins = await this.levelUpCards(initData, startResult.total_coins, axiosInstance);
+            this.log(`Đã nâng cấp hết các thẻ đủ điều kiện | Balance: ${updatedTotalCoins}`, "success");
+          }
 
-            const dailyRewardResult = await this.callDailyRewardAPI(initData, axiosInstance);
-            this.log(dailyRewardResult.message, dailyRewardResult.success ? "success" : "warning");
-
-            if (this.config.dailycombo) {
-              const newBalance = await this.dailyCombo(initData, startResult.total_coins, axiosInstance);
-            }
-
-            if (this.config.enableCardUpgrades) {
-              const updatedTotalCoins = await this.levelUpCards(initData, startResult.total_coins, axiosInstance);
-              this.log(`Đã nâng cấp hết các thẻ đủ điều kiện | Balance: ${updatedTotalCoins}`, "success");
-            }
-
-            await this.upgradeGameStats(initData, axiosInstance);
-          } else {
-            this.log(startResult.error, "error");
+          if (settings.AUTO_UPGRADE_ENERGY || settings.AUTO_UPGRADE_TAP) {
+            await this.upgradeGameStats(initData, axiosInstance, startResult);
           }
         } catch (error) {
           this.log(`Lỗi xử lý tài khoản ${i + 1}: ${error.message}`, "error");
         }
 
-        await new Promise((resolve) => setTimeout(resolve, 1000));
+        await new Promise((resolve) => setTimeout(resolve, 5000));
       }
 
       console.log(`Đã xử lý xong tất cả tài khoản.`);
