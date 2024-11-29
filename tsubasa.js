@@ -230,8 +230,8 @@ class Tsubasa {
     try {
       const achievementResponse = await axiosInstance.post(achievementUrl, achievementPayload);
       if (achievementResponse.status === 200) {
-        if (achievementResponse.data && achievementResponse.data.task_info) {
-          const updatedTask = achievementResponse.data.task_info.find((task) => task.id === taskId) || achievementResponse.data.update?.task;
+        if (achievementResponse?.data && achievementResponse?.data?.task_info) {
+          const updatedTask = achievementResponse.data.task_info.find((task) => task.id === taskId) || achievementResponse.data?.update?.task;
           if (updatedTask && updatedTask.status === 2) {
             return { success: true, description: "success", reward: updatedTask.reward };
           } else if (updatedTask) {
@@ -241,7 +241,7 @@ class Tsubasa {
       }
       return { success: false, description: "Chưa đạt điều kiện hoặc nhiệm vụ cần thực hiện thủ công!" };
     } catch (error) {
-      this.log(`Lỗi rồi ${taskId}| ${title}: ${error.response.data.message || error.message}`, "warning");
+      this.log(`Lỗi rồi ${taskId}| ${title}: ${error?.response?.data?.message || error.message}`, "warning");
       return { success: false, description: error.message };
     }
   }

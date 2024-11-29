@@ -8,14 +8,15 @@ const { Worker, isMainThread, parentPort, workerData } = require("worker_threads
 const user_agents = require("./config/userAgents");
 const settings = require("./config/config");
 const { sleep, getRandomNumber, loadData } = require("./utils");
+
 class Tsubasa {
   constructor(initData, accountIndex, proxy) {
     this.accountIndex = accountIndex;
     this.initData = initData;
     this.proxy = proxy;
     this.proxyIP = "Unknown IP";
-    const userInfo = JSON.parse(decodeURIComponent(this.initData.split("user=")[1].split("&")[0]));
-    const firstUserId = userInfo.id;
+    const userInfo = JSON.parse(decodeURIComponent(this.initData?.split("user=")[1]?.split("&")[0]));
+    const firstUserId = userInfo?.id;
     this.headers = {
       Accept: "application/json, text/plain, */*",
       "Accept-Encoding": "gzip, deflate, br",
@@ -30,7 +31,7 @@ class Tsubasa {
       "Sec-Fetch-Mode": "cors",
       "Sec-Fetch-Site": "same-origin",
       "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36",
-      "X-Player-Id": firstUserId.toString(),
+      "X-Player-Id": firstUserId,
       "X-Masterhash": "fcd309c672b6ede14f2416cca64caa8ceae4040470f67e83a6964aeb68594bbc",
     };
     this.config = this.loadConfig();
@@ -247,8 +248,8 @@ class Tsubasa {
     try {
       const achievementResponse = await axiosInstance.post(achievementUrl, achievementPayload);
       if (achievementResponse.status === 200) {
-        if (achievementResponse.data && achievementResponse.data.task_info) {
-          const updatedTask = achievementResponse.data.task_info.find((task) => task.id === taskId) || achievementResponse.data.update?.task;
+        if (achievementResponse?.data && achievementResponse?.data?.task_info) {
+          const updatedTask = achievementResponse.data.task_info.find((task) => task.id === taskId) || achievementResponse.data?.update?.task;
           if (updatedTask && updatedTask.status === 2) {
             return { success: true, description: "success", reward: updatedTask.reward };
           } else if (updatedTask) {
@@ -258,7 +259,7 @@ class Tsubasa {
       }
       return { success: false, description: "Chưa đạt điều kiện hoặc nhiệm vụ cần thực hiện thủ công!" };
     } catch (error) {
-      this.log(`Lỗi rồi ${taskId}| ${title}: ${error.response.data.message || error.message}`, "warning");
+      this.log(`Lỗi rồi ${taskId}| ${title}: ${error?.response?.data.message || error.message}`, "warning");
       return { success: false, description: error.message };
     }
   }
