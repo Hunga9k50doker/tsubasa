@@ -257,6 +257,7 @@ class Tsubasa {
         // console.log(dailycombo);
         const cardInfo = startResponse.data.card_info.flatMap((category) => {
           return category.card_list.map((card) => ({
+            ...card,
             categoryId: card.category,
             cardId: card.id,
             level: card.level,
@@ -385,6 +386,7 @@ class Tsubasa {
       const currentTime = Math.floor(Date.now() / 1000);
 
       for (const card of sortedCards) {
+        await sleep(2);
         if (cooldownCards.has(card.cardId)) {
           continue;
         }

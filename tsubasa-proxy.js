@@ -274,6 +274,7 @@ class Tsubasa {
 
         const cardInfo = startResponse.data.card_info.flatMap((category) => {
           return category.card_list.map((card) => ({
+            ...card,
             categoryId: card.category,
             cardId: card.id,
             level: card.level,
@@ -339,7 +340,7 @@ class Tsubasa {
             this.log(`Chưa đến thời gian nâng cấp tiếp theo cho thẻ ${card.name} (${card.cardId})`, "warning");
             cooldownCards.add(card.cardId);
           } else {
-            this.log(`Lỗi nâng cấp thẻ ${card.name} (${card.cardId}): ${error.message}`, "warning");
+            this.log(`Lỗi nâng cấp thẻ ${card.name} (${card.cardId}): ${error?.response?.data?.message || error.message}`, "warning");
           }
           return updatedTotalCoins;
         }
@@ -396,7 +397,7 @@ class Tsubasa {
 
     do {
       leveledUp = false;
-      const cardInfo = await this.getUserInfo(initData, axiosInstance);
+      const { cardInfo } = await this.getUserInfo(initData, axiosInstance);
       if (!cardInfo) {
         console.log("Không lấy được thông tin thẻ. Hủy nâng cấp thẻ!");
         break;
@@ -406,10 +407,10 @@ class Tsubasa {
       const currentTime = Math.floor(Date.now() / 1000);
 
       for (const card of sortedCards) {
+        await sleep(3);
         if (cooldownCards.has(card.cardId)) {
           continue;
         }
-
         if (card.level_up_available_date && card.level_up_available_date > 0) {
           const now = Math.floor(Date.now() / 1000);
           const secondsLeft = card.level_up_available_date - now;
@@ -448,7 +449,7 @@ class Tsubasa {
               this.log(`Chưa đến thời gian nâng cấp tiếp theo cho thẻ ${card.name} (${card.cardId})`, "warning");
               cooldownCards.add(card.cardId);
             } else {
-              this.log(`Lỗi nâng cấp thẻ ${card.name} (${card.cardId}): ${error.message}`, "warning");
+              this.log(`Lỗi nâng cấp thẻ ${card.name} (${card.cardId}): ${error?.response?.data?.message || error.message}`, "warning");
             }
           }
         }
